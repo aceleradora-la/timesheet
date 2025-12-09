@@ -2,7 +2,6 @@
 
 import publicWidget from "@web/legacy/js/public/public_widget";
 import {session} from "@web/session";
-import {jsonrpc} from "@web/core/network/rpc";
 
 export const HrTimesheetPortal = publicWidget.Widget.extend({
     selector: "div.hr_timesheet_portal",
@@ -29,11 +28,10 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
         const self = this;
         const line = jQuery(e.currentTarget).parents("tr").data("line-id");
         try {
-            await jsonrpc("/web/dataset/call_kw", {
+            await self._rpc({
                 model: "account.analytic.line",
                 method: "unlink",
                 args: [[line]],
-                kwargs: {},
             });
             await self._reload_timesheet();
         } catch (error) {
@@ -51,7 +49,7 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
         const task = this.$el.data("task-id");
 
         try {
-            const result = await jsonrpc("/web/dataset/call_kw", {
+            const result = await self._rpc({
                 model: "account.analytic.line",
                 method: "create",
                 args: [[{
@@ -62,7 +60,6 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
                     unit_amount: 0,
                     name: "/",
                 }]],
-                kwargs: {},
             });
             const line_id = Array.isArray(result) ? result[0] : result;
             await self._reload_timesheet();
@@ -90,11 +87,10 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
                 .map((field) => [field.name, field.value])
         );
         try {
-            await jsonrpc("/web/dataset/call_kw", {
+            await self._rpc({
                 model: "account.analytic.line",
                 method: "write",
                 args: [[line_id], data],
-                kwargs: {},
             });
             await self._reload_timesheet();
         } catch (error) {
