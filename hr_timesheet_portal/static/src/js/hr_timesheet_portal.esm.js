@@ -109,6 +109,9 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
                     unit_amount: 0,
                     name: "/",
                 }]],
+                kwargs: {
+                    context: {"from_portal": True},
+                },
             });
             const line_id = Array.isArray(result) ? result[0] : result;
             await self._reload_timesheet();
@@ -140,6 +143,9 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
                 model: "account.analytic.line",
                 method: "write",
                 args: [[line_id], data],
+                kwargs: {
+                    context: {"from_portal": True},
+                },
             });
             await self._reload_timesheet();
         } catch (error) {
