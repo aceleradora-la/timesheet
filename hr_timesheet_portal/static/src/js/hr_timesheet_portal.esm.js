@@ -2,6 +2,7 @@
 
 import publicWidget from "@web/legacy/js/public/public_widget";
 import {session} from "@web/session";
+import {jsonrpc} from "@web/core/network/rpc";
 
 export const HrTimesheetPortal = publicWidget.Widget.extend({
     selector: "div.hr_timesheet_portal",
@@ -20,56 +21,57 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
      */
     init() {
         this._super(...arguments);
-        this.orm = this.bindService("orm");
-        this.ui = this.bindService("ui");
-        this.user = this.bindService("user");
     },
 
     _onclick_delete: async function (e) {
         e.stopPropagation();
-        this.ui.block();
+        e.preventDefault();
+        const self = this;
         const line = jQuery(e.currentTarget).parents("tr").data("line-id");
-        await this.orm
-            .unlink("account.analytic.line", [line])
-            .then(this.proxy("_reload_timesheet"))
-            .catch(this.proxy("_display_failure"))
-            .finally(() => {
-                this.ui.unblock();
+        try {
+            await jsonrpc("/web/dataset/call_kw", {
+                model: "account.analytic.line",
+                method: "unlink",
+                args: [[line]],
+                kwargs: {},
             });
+            await self._reload_timesheet();
+        } catch (error) {
+            self._display_failure(error);
+        }
     },
 
-    _onclick_add: async function () {
+    _onclick_add: async function (e) {
+        e.preventDefault();
         const self = this;
         const uid =
-            this.user?.userId ||
             (Array.isArray(session.user_id) ? session.user_id[0] : session.user_id);
         const account = this.$el.data("account-id");
         const project = this.$el.data("project-id");
         const task = this.$el.data("task-id");
 
-        this.ui.block();
-        await this.orm
-            .call("account.analytic.line", "create", [
-                [
-                    {
-                        user_id: uid,
-                        account_id: account,
-                        project_id: project,
-                        task_id: task,
-                        unit_amount: 0,
-                        name: "/",
-                    },
-                ],
-            ])
-            .then(function (line_id) {
-                return self._reload_timesheet().then(function () {
-                    setTimeout(self._edit_line.bind(self, line_id), 0);
-                });
-            })
-            .catch(this.proxy("_display_failure"))
-            .finally(() => {
-                this.ui.unblock();
+        try {
+            const result = await jsonrpc("/web/dataset/call_kw", {
+                model: "account.analytic.line",
+                method: "create",
+                args: [[{
+                    user_id: uid,
+                    account_id: account,
+                    project_id: project,
+                    task_id: task,
+                    unit_amount: 0,
+                    name: "/",
+                }]],
+                kwargs: {},
             });
+            const line_id = Array.isArray(result) ? result[0] : result;
+            await self._reload_timesheet();
+            setTimeout(function() {
+                self._edit_line(line_id);
+            }, 0);
+        } catch (error) {
+            self._display_failure(error);
+        }
     },
 
     _onclick_edit: function (e) {
@@ -78,56 +80,63 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
 
     _onclick_submit: async function (e) {
         e.preventDefault();
-        this.ui.block();
-        const $tr = jQuery(e.target).parents("tr"),
-            data = Object.fromEntries(
-                $tr
-                    .find("form")
-                    .serializeArray()
-                    .map((field) => [field.name, field.value])
-            );
-        await this.orm
-            .write("account.analytic.line", [$tr.data("line-id")], data)
-            .then(this.proxy("_reload_timesheet"))
-            .catch(this.proxy("_display_failure"))
-            .finally(() => {
-                this.ui.unblock();
+        const self = this;
+        const $tr = jQuery(e.target).parents("tr");
+        const line_id = $tr.data("line-id");
+        const data = Object.fromEntries(
+            $tr
+                .find("form")
+                .serializeArray()
+                .map((field) => [field.name, field.value])
+        );
+        try {
+            await jsonrpc("/web/dataset/call_kw", {
+                model: "account.analytic.line",
+                method: "write",
+                args: [[line_id], data],
+                kwargs: {},
             });
+            await self._reload_timesheet();
+        } catch (error) {
+            self._display_failure(error);
+        }
     },
 
-    _reload_timesheet: function () {
+    _reload_timesheet: async function () {
+        const self = this;
         this.$el.children("div.alert").remove();
-        return $.ajax({
-            dataType: "html",
-        }).then(function (data) {
-            const timesheets = jQuery.parseHTML(data).filter(function (element) {
-                const dhtp = jQuery(element).find("div.hr_timesheet_portal");
-                return dhtp.length > 0;
-            });
+        try {
+            const response = await fetch(window.location.href);
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, "text/html");
+            const timesheets = Array.from(doc.querySelectorAll("div.hr_timesheet_portal"));
 
             const $tableTimesheet = $(".hr_timesheet_portal .o_portal_my_doc_table");
             const $tableSubtotal = $(".hr_timesheet_portal .container_subtotal table");
             $tableTimesheet.find("tbody").remove();
             $tableSubtotal.find("tbody").remove();
 
-            const $tbodyTimesheet = jQuery(timesheets).find(
-                ".hr_timesheet_portal .o_portal_my_doc_table tbody"
-            );
-            const $tbodySubtotal = jQuery(timesheets).find(
-                ".hr_timesheet_portal .container_subtotal table tbody"
-            );
-            if ($tbodyTimesheet.length && $tbodyTimesheet.children().length > 0) {
-                $tableTimesheet.append($tbodyTimesheet);
+            if (timesheets.length > 0) {
+                const $newTable = jQuery(timesheets[0]);
+                const $tbodyTimesheet = $newTable.find(".o_portal_my_doc_table tbody");
+                const $tbodySubtotal = $newTable.find(".container_subtotal table tbody");
+                if ($tbodyTimesheet.length && $tbodyTimesheet.children().length > 0) {
+                    $tableTimesheet.append($tbodyTimesheet);
+                }
+                if ($tbodySubtotal.length && $tbodySubtotal.children().length > 0) {
+                    $tableSubtotal.append($tbodySubtotal);
+                }
             }
-            if ($tbodySubtotal.length && $tbodySubtotal.children().length > 0) {
-                $tableSubtotal.append($tbodySubtotal);
-            }
-        });
+        } catch (error) {
+            console.error("Error reloading timesheet:", error);
+        }
     },
 
     _display_failure: function (error) {
+        const message = error?.data?.message || error?.message || "An error occurred";
         this.$el.prepend(
-            jQuery('<div class="alert alert-danger">').text(error.data.message)
+            jQuery('<div class="alert alert-danger">').text(message)
         );
     },
 
