@@ -22,13 +22,62 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
         this._super(...arguments);
     },
 
+    /**
+     * Make RPC call using ajax.rpc (available in frontend)
+     */
+    _makeRPC: function (options) {
+        return new Promise(function (resolve, reject) {
+            if (typeof ajax !== "undefined" && ajax.rpc) {
+                ajax.rpc("/web/dataset/call_kw", {
+                    model: options.model,
+                    method: options.method,
+                    args: options.args,
+                    kwargs: options.kwargs || {},
+                }, {
+                    async: true,
+                }).then(resolve).catch(reject);
+            } else {
+                // Fallback: use fetch directly
+                fetch("/web/dataset/call_kw", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: "2.0",
+                        method: "call",
+                        params: {
+                            model: options.model,
+                            method: options.method,
+                            args: options.args,
+                            kwargs: options.kwargs || {},
+                        },
+                        id: Math.floor(Math.random() * 1000000000),
+                    }),
+                })
+                .then(function (response) {
+                    return response.json();
+                })
+                .then(function (data) {
+                    if (data.error) {
+                        reject(data.error);
+                    } else {
+                        resolve(data.result);
+                    }
+                })
+                .catch(reject);
+            }
+        });
+    },
+
     _onclick_delete: async function (e) {
         e.stopPropagation();
         e.preventDefault();
         const self = this;
         const line = jQuery(e.currentTarget).parents("tr").data("line-id");
         try {
-            await self._rpc({
+            await self._makeRPC({
                 model: "account.analytic.line",
                 method: "unlink",
                 args: [[line]],
@@ -49,7 +98,7 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
         const task = this.$el.data("task-id");
 
         try {
-            const result = await self._rpc({
+            const result = await self._makeRPC({
                 model: "account.analytic.line",
                 method: "create",
                 args: [[{
@@ -87,7 +136,7 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
                 .map((field) => [field.name, field.value])
         );
         try {
-            await self._rpc({
+            await self._makeRPC({
                 model: "account.analytic.line",
                 method: "write",
                 args: [[line_id], data],
