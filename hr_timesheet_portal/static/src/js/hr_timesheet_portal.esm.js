@@ -20,107 +20,56 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
      */
     init() {
         this._super(...arguments);
-    },
-
-    /**
-     * Make RPC call using ajax.rpc (available in frontend)
-     */
-    _makeRPC: function (options) {
-        return new Promise(function (resolve, reject) {
-            if (typeof ajax !== "undefined" && ajax.rpc) {
-                ajax.rpc("/web/dataset/call_kw", {
-                    model: options.model,
-                    method: options.method,
-                    args: options.args,
-                    kwargs: options.kwargs || {},
-                }, {
-                    async: true,
-                }).then(resolve).catch(reject);
-            } else {
-                // Fallback: use fetch directly
-                fetch("/web/dataset/call_kw", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "X-Requested-With": "XMLHttpRequest",
-                    },
-                    body: JSON.stringify({
-                        jsonrpc: "2.0",
-                        method: "call",
-                        params: {
-                            model: options.model,
-                            method: options.method,
-                            args: options.args,
-                            kwargs: options.kwargs || {},
-                        },
-                        id: Math.floor(Math.random() * 1000000000),
-                    }),
-                })
-                .then(function (response) {
-                    return response.json();
-                })
-                .then(function (data) {
-                    if (data.error) {
-                        reject(data.error);
-                    } else {
-                        resolve(data.result);
-                    }
-                })
-                .catch(reject);
-            }
-        });
+        this.orm = this.bindService("orm");
+        this.ui = this.bindService("ui");
+        this.user = this.bindService("user");
     },
 
     _onclick_delete: async function (e) {
         e.stopPropagation();
-        e.preventDefault();
-        const self = this;
+        this.ui.block();
         const line = jQuery(e.currentTarget).parents("tr").data("line-id");
-        try {
-            await self._makeRPC({
-                model: "account.analytic.line",
-                method: "unlink",
-                args: [[line]],
+        await this.orm
+            .unlink("account.analytic.line", [line])
+            .then(this.proxy("_reload_timesheet"))
+            .catch(this.proxy("_display_failure"))
+            .finally(() => {
+                this.ui.unblock();
             });
-            await self._reload_timesheet();
-        } catch (error) {
-            self._display_failure(error);
-        }
     },
 
-    _onclick_add: async function (e) {
-        e.preventDefault();
+    _onclick_add: async function () {
         const self = this;
         const uid =
+            this.user?.userId ||
             (Array.isArray(session.user_id) ? session.user_id[0] : session.user_id);
         const account = this.$el.data("account-id");
         const project = this.$el.data("project-id");
         const task = this.$el.data("task-id");
 
-        try {
-            const result = await self._makeRPC({
-                model: "account.analytic.line",
-                method: "create",
-                args: [[{
-                    user_id: uid,
-                    account_id: account,
-                    project_id: project,
-                    task_id: task,
-                    unit_amount: 0,
-                    name: "/",
-                }]],
-                kwargs: {
-                    context: {"from_portal": True},
-                },
+        this.ui.block();
+        await this.orm
+            .call("account.analytic.line", "create", [
+                [
+                    {
+                        user_id: uid,
+                        account_id: account,
+                        project_id: project,
+                        task_id: task,
+                        unit_amount: 0,
+                        name: "/",
+                    },
+                ],
+            ])
+            .then(function (line_id) {
+                return self._reload_timesheet().then(function () {
+                    setTimeout(self._edit_line.bind(self, line_id), 0);
+                });
+            })
+            .catch(this.proxy("_display_failure"))
+            .finally(() => {
+                this.ui.unblock();
             });
-            const line_id = Array.isArray(result) ? result[0] : result;
-            await self._reload_timesheet();
-            setTimeout(function() {
-                self._edit_line(line_id);
-            }, 0);
-        } catch (error) {
-            self._display_failure(error);
-        }
     },
 
     _onclick_edit: function (e) {
@@ -129,65 +78,56 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
 
     _onclick_submit: async function (e) {
         e.preventDefault();
-        const self = this;
-        const $tr = jQuery(e.target).parents("tr");
-        const line_id = $tr.data("line-id");
-        const data = Object.fromEntries(
-            $tr
-                .find("form")
-                .serializeArray()
-                .map((field) => [field.name, field.value])
-        );
-        try {
-            await self._makeRPC({
-                model: "account.analytic.line",
-                method: "write",
-                args: [[line_id], data],
-                kwargs: {
-                    context: {"from_portal": True},
-                },
+        this.ui.block();
+        const $tr = jQuery(e.target).parents("tr"),
+            data = Object.fromEntries(
+                $tr
+                    .find("form")
+                    .serializeArray()
+                    .map((field) => [field.name, field.value])
+            );
+        await this.orm
+            .write("account.analytic.line", [$tr.data("line-id")], data)
+            .then(this.proxy("_reload_timesheet"))
+            .catch(this.proxy("_display_failure"))
+            .finally(() => {
+                this.ui.unblock();
             });
-            await self._reload_timesheet();
-        } catch (error) {
-            self._display_failure(error);
-        }
     },
 
-    _reload_timesheet: async function () {
-        const self = this;
+    _reload_timesheet: function () {
         this.$el.children("div.alert").remove();
-        try {
-            const response = await fetch(window.location.href);
-            const html = await response.text();
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, "text/html");
-            const timesheets = Array.from(doc.querySelectorAll("div.hr_timesheet_portal"));
+        return $.ajax({
+            dataType: "html",
+        }).then(function (data) {
+            const timesheets = jQuery.parseHTML(data).filter(function (element) {
+                const dhtp = jQuery(element).find("div.hr_timesheet_portal");
+                return dhtp.length > 0;
+            });
 
             const $tableTimesheet = $(".hr_timesheet_portal .o_portal_my_doc_table");
             const $tableSubtotal = $(".hr_timesheet_portal .container_subtotal table");
             $tableTimesheet.find("tbody").remove();
             $tableSubtotal.find("tbody").remove();
 
-            if (timesheets.length > 0) {
-                const $newTable = jQuery(timesheets[0]);
-                const $tbodyTimesheet = $newTable.find(".o_portal_my_doc_table tbody");
-                const $tbodySubtotal = $newTable.find(".container_subtotal table tbody");
-                if ($tbodyTimesheet.length && $tbodyTimesheet.children().length > 0) {
-                    $tableTimesheet.append($tbodyTimesheet);
-                }
-                if ($tbodySubtotal.length && $tbodySubtotal.children().length > 0) {
-                    $tableSubtotal.append($tbodySubtotal);
-                }
+            const $tbodyTimesheet = jQuery(timesheets).find(
+                ".hr_timesheet_portal .o_portal_my_doc_table tbody"
+            );
+            const $tbodySubtotal = jQuery(timesheets).find(
+                ".hr_timesheet_portal .container_subtotal table tbody"
+            );
+            if ($tbodyTimesheet.length && $tbodyTimesheet.children().length > 0) {
+                $tableTimesheet.append($tbodyTimesheet);
             }
-        } catch (error) {
-            console.error("Error reloading timesheet:", error);
-        }
+            if ($tbodySubtotal.length && $tbodySubtotal.children().length > 0) {
+                $tableSubtotal.append($tbodySubtotal);
+            }
+        });
     },
 
     _display_failure: function (error) {
-        const message = error?.data?.message || error?.message || "An error occurred";
         this.$el.prepend(
-            jQuery('<div class="alert alert-danger">').text(message)
+            jQuery('<div class="alert alert-danger">').text(error.data.message)
         );
     },
 
@@ -226,4 +166,3 @@ export const HrTimesheetPortal = publicWidget.Widget.extend({
 });
 
 publicWidget.registry.HrTimesheetPortal = HrTimesheetPortal;
-
